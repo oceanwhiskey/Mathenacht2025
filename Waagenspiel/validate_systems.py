@@ -2,13 +2,14 @@
 validate_systems.py
 --------------------
 Algorithmus zur Prüfung, ob ein Relationssystem (mit Variablen a, b, c, d >= 1)
-ein eindeutiges Maximum besitzt, und Validierung aller Systeme aus relation_systems.json.
+ein eindeutiges Maximum besitzt.
 
 Ablauf des Validierungsalgorithmus (LP-basiert)
 ------------------------------------------------
 Gegeben: Eine Liste von Relationen der Form "L op R",
-  wobei L und R Summen aus {a, b, c, d} (Koeffizient 1) sind
-  und op ∈ {<, >, =}. Alle Variablen sind natürliche Zahlen >= 1.
+  wobei L und R Multimengen aus {a, b, c, d} mit maximal 3 Symbolen sind
+  (ein Symbol darf mehrfach vorkommen, z. B. a+a+b) und op ∈ {<, >, =}.
+  Alle Variablen sind natürliche Zahlen >= 1.
 
 Für jede Kandidatenvariable x und jeden Gegner y wird geprüft, ob das
 lineare Programm
@@ -28,9 +29,6 @@ Da die Variablen natürliche Zahlen sind (diskret), reicht LP hier aus:
 Wenn y >= x für reelle Zahlen unmöglich ist (unter den gegebenen linearen
 Constraints), ist es für ganzzahlige Zahlen erst recht unmöglich.
 """
-
-import json
-from pathlib import Path
 
 import numpy as np
 from scipy.optimize import linprog
@@ -196,57 +194,19 @@ def has_unique_maximum(relation_strings: list[str]) -> tuple[bool, str | None]:
 
 
 # ---------------------------------------------------------------------------
-# Validate all systems from relation_systems.json
-# ---------------------------------------------------------------------------
-
-def validate_all(json_path: str = 'relation_systems.json') -> None:
-    path = Path(json_path)
-    with path.open(encoding='utf-8') as f:
-        systems = json.load(f)
-
-    total = len(systems)
-    mismatches = 0
-    confirmed_unique = 0
-    confirmed_none = 0
-
-    for entry in systems:
-        rels = entry['relations']
-        stored_unique = entry['has_unique_max']
-        stored_max = entry['unique_max']
-
-        computed_unique, computed_max = has_unique_maximum(rels)
-
-        if computed_unique != stored_unique or computed_max != stored_max:
-            mismatches += 1
-            print(f"MISMATCH: {rels}")
-            print(f"  Gespeichert: unique={stored_unique}, max={stored_max}")
-            print(f"  Berechnet:   unique={computed_unique}, max={computed_max}")
-        else:
-            if computed_unique:
-                confirmed_unique += 1
-            else:
-                confirmed_none += 1
-
-    print()
-    print("=" * 60)
-    print(f"Gesamt Systeme:              {total:>8}")
-    print(f"Mit eindeutigem Maximum:     {confirmed_unique:>8}")
-    print(f"Ohne eindeutiges Maximum:    {confirmed_none:>8}")
-    print(f"Abweichungen (mismatches):   {mismatches:>8}")
-    if mismatches == 0:
-        print()
-        print("✓ Alle Einträge stimmen mit dem Algorithmus überein.")
-    else:
-        print()
-        print("✗ Es gibt Abweichungen – bitte prüfen!")
-
-
-# ---------------------------------------------------------------------------
-# Entry point
+# Entry point: check a single system from command line
 # ---------------------------------------------------------------------------
 
 if __name__ == '__main__':
     import sys
 
-    json_file = sys.argv[1] if len(sys.argv) > 1 else 'relation_systems.json'
-    validate_all(json_file)
+    if len(sys.argv) < 2:
+        print("Verwendung: python validate_systems.py 'a+a < b' 'a = b+c+d'")
+        sys.exit(1)
+
+    rels = sys.argv[1:]
+    unique, max_var = has_unique_maximum(rels)
+    if unique:
+        print(f"Eindeutiges Maximum: {max_var}")
+    else:
+        print("Kein eindeutiges Maximum.")

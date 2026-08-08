@@ -1,8 +1,9 @@
 """
 analyze_systems.py
 -------------------
-Filtert aus relation_systems.json alle Systeme mit eindeutigem Maximum,
-speichert sie in unique_systems.json und gibt ausführliche Statistiken aus.
+Liest unique_systems.json und gibt ausführliche Statistiken aus.
+Die Datei wird von generate_systems.py erzeugt und enthält nur Systeme
+mit eindeutigem Maximum.
 """
 
 import json
@@ -19,7 +20,7 @@ def count_op(relations: list[str], op: str) -> int:
 
 
 def term_sizes(side: str) -> int:
-    """Number of variables on one side (count of '+' plus 1)."""
+    """Number of symbols on one side (count of '+' plus 1)."""
     return side.count('+') + 1
 
 
@@ -51,20 +52,16 @@ def total_variables_used(relations: list[str]) -> int:
 # Main
 # ---------------------------------------------------------------------------
 
-def main(src: str = 'relation_systems.json',
-         dst: str = 'unique_systems.json') -> None:
+def main(src: str = 'unique_systems.json') -> None:
 
     with open(src, encoding='utf-8') as f:
-        all_systems = json.load(f)
-
-    unique = [s for s in all_systems if s['has_unique_max']]
-
-    # Save filtered JSON
-    with open(dst, 'w', encoding='utf-8') as f:
-        json.dump(unique, f, indent=2, ensure_ascii=False)
-    print(f"Gespeichert: {dst}  ({len(unique)} Systeme)\n")
+        unique = json.load(f)
+    print(f"Geladen: {src}  ({len(unique)} Systeme mit eindeutigem Maximum)\n")
 
     n = len(unique)
+    if n == 0:
+        print("Keine Systeme gefunden.")
+        return
 
     # ------------------------------------------------------------------
     # 1. Systemgröße
@@ -196,11 +193,10 @@ def main(src: str = 'relation_systems.json',
     print()
     print("=" * 60)
     print(f"GESAMT: {n} Systeme mit eindeutigem Maximum")
-    print(f"        (von {len(all_systems)} symmetrisch verschiedenen Systemen = {100*n/len(all_systems):.1f} %)")
 
 
 if __name__ == '__main__':
     import sys
-    src = sys.argv[1] if len(sys.argv) > 1 else 'relation_systems.json'
-    dst = sys.argv[2] if len(sys.argv) > 2 else 'unique_systems.json'
-    main(src, dst)
+    src = sys.argv[1] if len(sys.argv) > 1 else 'unique_systems.json'
+    main(src)
+
