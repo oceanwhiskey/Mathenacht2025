@@ -1,58 +1,56 @@
 """
 validate_systems.py
 --------------------
-Algorithmus zur Prüfung, ob ein Relationssystem (mit Variablen a, b, c, d)
+Algorithmus zur Prüfung, ob ein Relationssystem (mit Variablen a, b, c, d >= 1)
 ein eindeutiges Maximum besitzt, und Validierung aller Systeme aus relation_systems.json.
 
-Ablauf des Validierungsalgorithmus
-------------------------------------
+Ablauf des Validierungsalgorithmus (LP-basiert)
+------------------------------------------------
 Gegeben: Eine Liste von Relationen der Form "L op R",
   wobei L und R Summen aus {a, b, c, d} (Koeffizient 1) sind
-  und op ∈ {<, >, =}.
+  und op ∈ {<, >, =}. Alle Variablen sind natürliche Zahlen >= 1.
 
-Schritt 1 – Normalisierung
-  Jede Relation wird als (L, op, R) mit L und R als Variablenmengen dargestellt.
-  > wird zu < (durch Tauschen der Seiten).
+Für jede Kandidatenvariable x und jeden Gegner y wird geprüft, ob das
+lineare Programm
 
-Schritt 2 – Direkte Ableitungen
-  Aus L < R mit |R| = 1 folgt sicher: R[0] > L[i] für alle i.
-  (Nicht umgekehrt: aus L < R mit |L| = 1 folgt NICHT R[j] > L[0] für einzelne j.)
+    Minimiere  x - y          (wir suchen ob y >= x möglich ist)
+    unter:     alle Relationen des Systems als lineare (Un-)Gleichungen
+               a, b, c, d >= 1
 
-Schritt 3 – Lineare Kombinationen
-  Alle Paare von Ungleichungs-Koeffizientenvektoren werden mit kleinen
-  ganzzahligen Faktoren (1–3) kombiniert. Ergibt eine Kombination
-  einen Vektor mit genau zwei Einträgen +k und -k, folgt daraus ein
-  direkter Variablenvergleich.
+unerfüllbar ist oder ein Minimum > 0 hat. Falls x - y > 0 für alle y != x
+zwingend gilt, ist x das eindeutige Maximum.
 
-Schritt 4 – Transitivitätsabschluss
-  Aus (x > y) und (y > z) wird (x > z) abgeleitet (Floyd-Warshall-artig).
+Technisch: scipy.optimize.linprog prüft Erfüllbarkeit von
+  "Gibt es a,b,c,d >= 1 mit den Systemrelationen UND y >= x?"
+Falls das LP unbeschränkt/unerfüllbar ist, gilt x > y zwingend.
 
-Schritt 5 – Eindeutigkeitsprüfung
-  Eine Variable x ist eindeutiges Maximum, wenn (x > y) für alle y ≠ x gilt.
-  Genau ein solcher Kandidat → eindeutige Lösung.
+Da die Variablen natürliche Zahlen sind (diskret), reicht LP hier aus:
+Wenn y >= x für reelle Zahlen unmöglich ist (unter den gegebenen linearen
+Constraints), ist es für ganzzahlige Zahlen erst recht unmöglich.
 """
 
 import json
-import re
 from pathlib import Path
+
+import numpy as np
+from scipy.optimize import linprog
 
 VARS = ['a', 'b', 'c', 'd']
 VAR_IDX = {v: i for i, v in enumerate(VARS)}
-
 
 # ---------------------------------------------------------------------------
 # Parsing
 # ---------------------------------------------------------------------------
 
 def parse_side(s: str) -> tuple[int, ...]:
-    """Parse a side like 'a+b+c' into a sorted tuple of variable indices."""
+    """Parse 'a+b+c' into a sorted tuple of variable indices."""
     return tuple(sorted(VAR_IDX[v.strip()] for v in s.split('+')))
 
 
 def parse_relation(rel_str: str) -> tuple[tuple, str, tuple]:
     """
-    Parse a relation string such as 'a+b < c' or 'a = b+c+d'.
-    Returns (L, op, R) with L and R as sorted index tuples and op in {'<', '>',' ='}.
+    Parse 'a+b < c' or 'a = b+c+d'.
+    Returns (L, op, R) with L, R as sorted index tuples and op in {'<','>','='}.
     """
     for op in ('<=', '>=', '<', '>', '='):
         if op in rel_str:
@@ -64,34 +62,31 @@ def parse_relation(rel_str: str) -> tuple[tuple, str, tuple]:
 
 
 def normalise(L, op, R):
-    """Normalise: convert > to < by swapping sides."""
+    """Convert > to < by swapping sides."""
     if op == '>':
         return R, '<', L
     return L, op, R
 
 
 # ---------------------------------------------------------------------------
-# Core algorithm: derive all (x > y) pairs from a system
+# LP-based feasibility check
 # ---------------------------------------------------------------------------
 
-def derive_order(relations: list[tuple]) -> set[tuple[int, int]]:
+def _build_lp_constraints(relations: list[tuple]):
     """
-    Given a list of normalised (L, op, R) triples, derive all provable
-    (x > y) pairs using direct inference, linear combinations and transitivity.
+    Convert the relation system into LP constraint matrices.
 
-    Returns a set of (x, y) pairs meaning x > y.
+    Variables: x = [a, b, c, d]  (indices 0–3)
+    All variables >= 1  (encoded as lower bounds).
+
+    Returns (A_ub, b_ub, A_eq, b_eq) for scipy.linprog.
+      A_ub @ x <= b_ub   (strict < is approximated by <= -eps, see caller)
+      A_eq @ x  = b_eq
     """
-    gt: set[tuple[int, int]] = set()
-    ineqs: list[list[int]] = []   # coefficient vectors: sum(L) - sum(R) < 0
+    A_ub, b_ub, A_eq, b_eq = [], [], [], []
 
     for L, op, R in relations:
-        # --- Direct inference ---
-        if op == '<' and len(R) == 1:
-            # sum(L) < R[0]  →  R[0] > each element of L
-            for v in L:
-                gt.add((R[0], v))
-
-        # --- Build coefficient vector for linear-combination step ---
+        # coefficient vector for  sum(L) - sum(R)
         coeff = [0, 0, 0, 0]
         for v in L:
             coeff[v] += 1
@@ -99,38 +94,60 @@ def derive_order(relations: list[tuple]) -> set[tuple[int, int]]:
             coeff[v] -= 1
 
         if op == '<':
-            ineqs.append(coeff)          # coeff · x < 0
+            # sum(L) < sum(R)  ⟺  coeff · x < 0  ⟺  coeff · x <= -1
+            # (integers: strictly less means at most -1)
+            A_ub.append(coeff)
+            b_ub.append(-1)
         elif op == '=':
-            ineqs.append(coeff)          # coeff · x = 0  →  both directions
-            ineqs.append([-c for c in coeff])
+            A_eq.append(coeff)
+            b_eq.append(0)
 
-    # --- Linear combinations ---
-    n = len(ineqs)
-    for i in range(n):
-        for j in range(i, n):
-            for ci in range(1, 4):
-                for cj in range(0 if i != j else 1, 4):
-                    combined = [ci * ineqs[i][k] + cj * ineqs[j][k] for k in range(4)]
-                    nonzero = [(k, combined[k]) for k in range(4) if combined[k] != 0]
-                    if len(nonzero) == 2:
-                        (k1, c1), (k2, c2) = nonzero
-                        if c1 + c2 == 0:          # form: c*(k1 - k2) < 0
-                            if c1 > 0:
-                                gt.add((k1, k2))   # k1 > k2  (wrong: c1*k1 < 0 means k1 < 0 direction)
-                            else:
-                                gt.add((k2, k1))   # k2 > k1
+    return (
+        np.array(A_ub, dtype=float) if A_ub else None,
+        np.array(b_ub, dtype=float) if b_ub else None,
+        np.array(A_eq, dtype=float) if A_eq else None,
+        np.array(b_eq, dtype=float) if b_eq else None,
+    )
 
-    # --- Transitivitätsabschluss ---
-    changed = True
-    while changed:
-        changed = False
-        for (x, y) in list(gt):
-            for (y2, z) in list(gt):
-                if y == y2 and (x, z) not in gt:
-                    gt.add((x, z))
-                    changed = True
 
-    return gt
+def _is_infeasible(relations: list[tuple], extra_ub: list[int]) -> bool:
+    """
+    Check if the LP  {system relations} ∧ {extra_ub · x <= 0} ∧ {x >= 1}
+    is infeasible.
+
+    extra_ub is a coefficient vector for an additional constraint
+    extra_ub · x <= 0, i.e.  "y >= x"  encoded as  x - y <= 0.
+
+    Returns True if infeasible (meaning x > y is certain).
+    """
+    A_ub, b_ub, A_eq, b_eq = _build_lp_constraints(relations)
+
+    # Add the extra constraint
+    row = np.array(extra_ub, dtype=float).reshape(1, 4)
+    rhs = np.array([0.0])
+    if A_ub is not None:
+        A_ub = np.vstack([A_ub, row])
+        b_ub = np.append(b_ub, rhs)
+    else:
+        A_ub, b_ub = row, rhs
+
+    # Bounds: all variables >= 1, no upper bound
+    bounds = [(1, None)] * 4
+
+    # Minimise a dummy constant (just check feasibility)
+    result = linprog(
+        c=[0, 0, 0, 0],
+        A_ub=A_ub,
+        b_ub=b_ub,
+        A_eq=A_eq,
+        b_eq=b_eq,
+        bounds=bounds,
+        method='highs',
+        options={'disp': False},
+    )
+
+    # status 2 = infeasible
+    return result.status == 2
 
 
 # ---------------------------------------------------------------------------
@@ -139,25 +156,39 @@ def derive_order(relations: list[tuple]) -> set[tuple[int, int]]:
 
 def has_unique_maximum(relation_strings: list[str]) -> tuple[bool, str | None]:
     """
-    Check whether the given relation system has a unique maximum.
+    Check whether the relation system has a unique maximum for all a,b,c,d >= 1.
+
+    For each candidate x and each rival y:
+      Ask: "Is there a solution with y >= x?"
+      If the LP is infeasible → x > y is certain.
+    If x beats all rivals → x is the unique maximum.
 
     Parameters
     ----------
-    relation_strings : list of str
-        Relations such as ['a < d', 'b+c < d'].
+    relation_strings : list[str]
+        E.g. ['a = b+c+d', 'b = c'].
 
     Returns
     -------
-    (unique, name) where unique is True/False and name is the variable name
-    of the unique maximum (or None).
+    (unique, name)
     """
     parsed = [normalise(*parse_relation(r)) for r in relation_strings]
-    gt = derive_order(parsed)
 
-    candidates = [
-        v for v in range(4)
-        if all((v, other) in gt for other in range(4) if other != v)
-    ]
+    candidates = []
+    for x in range(4):
+        beats_all = True
+        for y in range(4):
+            if y == x:
+                continue
+            # Extra constraint: y >= x  ⟺  x - y <= 0
+            extra = [0, 0, 0, 0]
+            extra[x] = 1
+            extra[y] = -1
+            if not _is_infeasible(parsed, extra):
+                beats_all = False
+                break
+        if beats_all:
+            candidates.append(x)
 
     if len(candidates) == 1:
         return True, VARS[candidates[0]]
